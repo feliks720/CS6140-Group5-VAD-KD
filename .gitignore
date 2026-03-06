@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Large downloaded datasets and derived labels
+data/
+
+# Downloaded pretrained models and checkpoints
+pretrained_models/
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Experiment outputs
+results/
+runs/
+wandb/
+lightning_logs/
+logs/
+*.log
+
+# Archives and temporary artifacts
+*.tar
+*.tar.gz
+*.zip
+*.tmp
+*.bak
