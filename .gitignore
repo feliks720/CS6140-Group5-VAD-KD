@@ -32,14 +32,6 @@ pretrained_models/
 *.bin
 *.safetensors
 
-# Experiment outputs
-results/
-runs/
-wandb/
-lightning_logs/
-logs/
-*.log
-
 # Archives and temporary artifacts
 *.tar
 *.tar.gz
