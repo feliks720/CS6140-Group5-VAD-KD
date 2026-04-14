@@ -165,12 +165,12 @@ def compute_vad_metrics(predictions, targets, threshold=0.5):
 
 def print_metrics_table(metrics_dict, model_name="Model"):
     """Pretty-print metrics."""
-    print(f"\n{'─' * 45}")
+    print(f"\n{'-' * 45}")
     print(f"  {model_name}")
-    print(f"{'─' * 45}")
+    print(f"{'-' * 45}")
     for k, v in metrics_dict.items():
         if isinstance(v, float):
             print(f"  {k:<20s} {v:.4f}")
         else:
             print(f"  {k:<20s} {v}")
-    print(f"{'─' * 45}")
+    print(f"{'-' * 45}")

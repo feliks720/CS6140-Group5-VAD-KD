@@ -38,3 +38,6 @@ pretrained_models/
 *.zip
 *.tmp
 *.bak
+
+# claude
+.claude/

@@ -487,7 +487,7 @@ def main():
     if args.generate_labels:
         print("\n--- Generating teacher soft labels ---")
         teacher = CRDNNTeacher(device=args.device)
-        for split in ["train", "dev", "test"]:
+        for split in ["train", "dev", "eval"]:
             generate_soft_labels(teacher, args.data_dir, args.soft_labels_dir, split)
         print("Done! Now run without --generate_labels to train.")
         return
@@ -499,7 +499,7 @@ def main():
     # --- Evaluation only ---
     if args.eval_only:
         assert args.checkpoint, "Provide --checkpoint for eval_only mode"
-        ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=True)
+        ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
         student.load_state_dict(ckpt["model_state_dict"])
         student.to(args.device)
         student.eval()
