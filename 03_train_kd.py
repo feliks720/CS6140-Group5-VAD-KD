@@ -344,6 +344,71 @@ class KDTrainer:
 
 # ======================== KD Dataset ========================
 
+def load_metadata_annotations(metadata_dir, split):
+    """
+    Load ground-truth speech annotations from LibriParty metadata JSON.
+
+    Args:
+        metadata_dir: Path to metadata/ directory (e.g., data/LibriParty/dataset/metadata)
+        split: 'train', 'dev', or 'eval'
+
+    Returns:
+        dict mapping session_name -> list of (start_sec, stop_sec) speech segments
+    """
+    json_path = os.path.join(metadata_dir, f"{split}.json")
+    if not os.path.exists(json_path):
+        return None
+
+    with open(json_path, "r") as f:
+        metadata = json.load(f)
+
+    annotations = {}
+    non_speech_keys = {"noises", "background"}
+
+    for session_name, session_data in metadata.items():
+        segments = []
+        for key, utterances in session_data.items():
+            if key in non_speech_keys:
+                continue
+            # key is a speaker ID, utterances is a list of dicts with start/stop
+            if isinstance(utterances, list):
+                for utt in utterances:
+                    start = utt.get("start", utt.get("start_time", 0))
+                    stop = utt.get("stop", utt.get("end", utt.get("end_time", 0)))
+                    segments.append((float(start), float(stop)))
+        # Sort by start time
+        segments.sort(key=lambda x: x[0])
+        annotations[session_name] = segments
+
+    return annotations
+
+
+def segments_to_frame_labels(segments, num_frames, sample_rate=16000, hop_length=160):
+    """
+    Convert time-based speech segments to frame-level binary labels.
+
+    Args:
+        segments: list of (start_sec, stop_sec) tuples
+        num_frames: total number of feature frames
+        sample_rate: audio sample rate
+        hop_length: STFT hop length in samples
+
+    Returns:
+        Tensor of shape (num_frames,) with 1.0 for speech frames, 0.0 otherwise
+    """
+    labels = torch.zeros(num_frames)
+    frame_duration = hop_length / sample_rate  # seconds per frame
+
+    for start_sec, stop_sec in segments:
+        start_frame = int(start_sec / frame_duration)
+        stop_frame = int(stop_sec / frame_duration)
+        start_frame = max(0, min(start_frame, num_frames))
+        stop_frame = max(0, min(stop_frame, num_frames))
+        labels[start_frame:stop_frame] = 1.0
+
+    return labels
+
+
 class KDDataset(torch.utils.data.Dataset):
     """
     Dataset that loads precomputed features, teacher soft labels, and hard labels.
@@ -351,14 +416,21 @@ class KDDataset(torch.utils.data.Dataset):
     Expected directory structure:
         soft_labels_dir/{split}/{basename}.pt   (teacher posteriors)
         data_dir/{split}/*.wav                  (audio files)
+        data_dir/metadata/{split}.json          (ground-truth annotations, optional)
+
+    When use_gt_labels=True, hard labels come from ground-truth annotations
+    instead of thresholded teacher posteriors.
     """
 
     def __init__(self, data_dir, soft_labels_dir, split="train",
-                 n_mels=40, sample_rate=16000, max_duration_s=30.0):
+                 n_mels=40, sample_rate=16000, max_duration_s=30.0,
+                 use_gt_labels=False):
         self.split = split
         self.n_mels = n_mels
         self.sample_rate = sample_rate
         self.max_samples = int(max_duration_s * sample_rate)
+        self.hop_length = 160
+        self.use_gt_labels = use_gt_labels
 
         import glob
         audio_path = os.path.join(data_dir, split)
@@ -368,15 +440,35 @@ class KDDataset(torch.utils.data.Dataset):
 
         self.soft_labels_dir = os.path.join(soft_labels_dir, split)
 
+        # Load ground-truth annotations if requested
+        self.gt_annotations = None
+        if use_gt_labels:
+            metadata_dir = os.path.join(data_dir, "metadata")
+            self.gt_annotations = load_metadata_annotations(metadata_dir, split)
+            if self.gt_annotations is not None:
+                print(f"  Loaded GT annotations for {len(self.gt_annotations)} sessions")
+            else:
+                print(f"  WARNING: GT annotations not found at {metadata_dir}/{split}.json, "
+                      f"falling back to thresholded teacher labels")
+
         # FBANK
         self.fbank = torchaudio.transforms.MelSpectrogram(
-            sample_rate=sample_rate, n_fft=400, hop_length=160, n_mels=n_mels,
+            sample_rate=sample_rate, n_fft=400, hop_length=self.hop_length, n_mels=n_mels,
         )
 
-        print(f"KDDataset ({split}): {len(self.wav_files)} files")
+        print(f"KDDataset ({split}): {len(self.wav_files)} files, "
+              f"GT labels: {use_gt_labels and self.gt_annotations is not None}")
 
     def __len__(self):
         return len(self.wav_files)
+
+    def _get_session_name(self, wav_path):
+        """Extract session name from wav path (e.g., 'session_0' from '.../session_0/session_0_mixture.wav')."""
+        basename = os.path.splitext(os.path.basename(wav_path))[0]  # session_0_mixture
+        # Remove '_mixture' suffix if present
+        if basename.endswith("_mixture"):
+            return basename[:-len("_mixture")]
+        return basename
 
     def __getitem__(self, idx):
         wav_path = self.wav_files[idx]
@@ -409,9 +501,21 @@ class KDDataset(torch.utils.data.Dataset):
             # Fallback: use zeros (teacher not yet computed)
             teacher_probs = torch.zeros(num_frames)
 
-        # Hard labels (threshold teacher for now - or load ground truth)
-        # TODO: Replace with actual ground truth labels from LibriParty annotations
-        hard_labels = (teacher_probs > 0.5).float()
+        # Hard labels: ground-truth if available, else thresholded teacher
+        if self.use_gt_labels and self.gt_annotations is not None:
+            session_name = self._get_session_name(wav_path)
+            if session_name in self.gt_annotations:
+                hard_labels = segments_to_frame_labels(
+                    self.gt_annotations[session_name],
+                    num_frames,
+                    self.sample_rate,
+                    self.hop_length,
+                )
+            else:
+                # Fallback for missing session
+                hard_labels = (teacher_probs > 0.5).float()
+        else:
+            hard_labels = (teacher_probs > 0.5).float()
 
         return features, teacher_probs, hard_labels, num_frames
 
@@ -460,6 +564,13 @@ def main():
     parser.add_argument("--data_dir", type=str, default="data/LibriParty/dataset")
     parser.add_argument("--soft_labels_dir", type=str, default="data/soft_labels")
 
+    # Ground truth & evaluation
+    parser.add_argument("--use_gt_labels", action="store_true",
+                        help="Use ground-truth annotations instead of thresholded teacher labels")
+    parser.add_argument("--eval_split", type=str, default="dev",
+                        choices=["dev", "eval"],
+                        help="Which split to evaluate on (default: dev)")
+
     # Other
     parser.add_argument("--device", type=str,
                         default="cuda" if torch.cuda.is_available() else "cpu")
@@ -472,6 +583,8 @@ def main():
 
     # Experiment name
     exp_name = f"{args.student}_T{args.temperature}_a{args.alpha}"
+    if args.use_gt_labels and not args.eval_only:
+        exp_name += "_gt"
     save_dir = os.path.join("results", exp_name)
 
     print("=" * 60)
@@ -479,6 +592,8 @@ def main():
     print(f"  Student: {args.student}")
     print(f"  Temperature: {args.temperature}")
     print(f"  Alpha: {args.alpha}")
+    print(f"  GT labels: {args.use_gt_labels}")
+    print(f"  Eval split: {args.eval_split}")
     print(f"  Device: {args.device}")
     print(f"  Save dir: {save_dir}")
     print("=" * 60)
@@ -505,7 +620,36 @@ def main():
         student.eval()
 
         print(f"\nLoaded checkpoint: {args.checkpoint}")
-        print(f"Checkpoint F1: {ckpt.get('f1', 'N/A')}")
+        print(f"Checkpoint F1 (training): {ckpt.get('f1', 'N/A')}")
+
+        # Evaluate on specified split
+        eval_dataset = KDDataset(args.data_dir, args.soft_labels_dir,
+                                 split=args.eval_split,
+                                 use_gt_labels=args.use_gt_labels)
+        eval_loader = torch.utils.data.DataLoader(
+            eval_dataset, batch_size=args.batch_size, shuffle=False,
+            num_workers=args.num_workers, collate_fn=collate_kd, pin_memory=True,
+        )
+
+        # Run evaluation
+        all_preds = []
+        all_labels = []
+        with torch.no_grad():
+            for features, teacher_probs, hard_labels, lengths in tqdm(eval_loader, desc=f"Eval ({args.eval_split})"):
+                features = features.to(args.device)
+                student_logits = student(features)
+                probs = torch.sigmoid(student_logits.squeeze(-1))
+                for i in range(features.shape[0]):
+                    length = lengths[i].item()
+                    all_preds.append(probs[i, :length].cpu().numpy())
+                    all_labels.append(hard_labels[i, :length].numpy())
+
+        all_preds = np.concatenate(all_preds)
+        all_labels = np.concatenate(all_labels)
+        metrics = compute_vad_metrics(all_preds, all_labels)
+
+        label_type = "GT" if args.use_gt_labels else "pseudo"
+        print_metrics_table(metrics, f"{args.student} ({args.eval_split}, {label_type} labels)")
 
         # Latency benchmark
         dummy_input = torch.randn(1, 1000, 40)  # ~10s of audio at 100fps
@@ -513,12 +657,30 @@ def main():
         print(f"\nLatency (CPU, 1000 frames): {latency['avg_ms']:.1f} ms")
         print(f"Throughput: {latency['throughput_fps']:.0f} frames/sec")
         print(f"Model size: {estimate_model_size_mb(student):.3f} MB")
+
+        # Save eval results
+        eval_results = {
+            "model": args.student,
+            "checkpoint": args.checkpoint,
+            "eval_split": args.eval_split,
+            "label_type": label_type,
+            "metrics": metrics,
+            "latency": latency,
+            "model_size_mb": estimate_model_size_mb(student),
+        }
+        eval_out = os.path.join(os.path.dirname(args.checkpoint),
+                                f"eval_{args.eval_split}_{label_type}.json")
+        with open(eval_out, "w") as f:
+            json.dump(eval_results, f, indent=2)
+        print(f"\nResults saved to {eval_out}")
         return
 
     # --- Create dataloaders ---
     print("\nCreating datasets...")
-    train_dataset = KDDataset(args.data_dir, args.soft_labels_dir, split="train")
-    val_dataset = KDDataset(args.data_dir, args.soft_labels_dir, split="dev")
+    train_dataset = KDDataset(args.data_dir, args.soft_labels_dir, split="train",
+                              use_gt_labels=args.use_gt_labels)
+    val_dataset = KDDataset(args.data_dir, args.soft_labels_dir, split=args.eval_split,
+                            use_gt_labels=args.use_gt_labels)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,

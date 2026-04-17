@@ -12,6 +12,9 @@ vad-kd-project/
 ├── 01_baseline_inference.py    # Load pretrained CRDNN teacher & evaluate
 ├── 02_energy_vad_baseline.py   # Energy-based VAD baseline (Part 1 comparison)
 ├── 03_train_kd.py              # Knowledge Distillation training pipeline
+├── 04_evaluate.py              # Comprehensive evaluation (GT + pseudo labels)
+├── 05_run_alpha_sweep.ps1      # Alpha sweep runner (Windows)
+├── 05_run_alpha_sweep.sh       # Alpha sweep runner (Linux/Mac)
 ├── models/
 │   └── students.py             # Student architecture definitions
 ├── utils/
@@ -126,7 +129,31 @@ foreach ($T in 1, 2, 4, 8) {
 ## Step 6: Evaluate All Models
 
 ```powershell
-python 03_train_kd.py --eval_only --student tiny_cnn --checkpoint results/tiny_cnn_T4_a0.7/best_model.pt
+# Evaluate a single model (pseudo labels, dev set — same as during training)
+python 03_train_kd.py --eval_only --student tiny_cnn --checkpoint results/tiny_cnn_T4.0_a0.7/best_model.pt
+
+# Evaluate on eval set with ground-truth annotations
+python 03_train_kd.py --eval_only --student tiny_cnn \
+    --checkpoint results/tiny_cnn_T4.0_a0.7/best_model.pt \
+    --eval_split eval --use_gt_labels
+
+# Comprehensive evaluation of ALL models (GT + pseudo, dev + eval, teacher included)
+python 04_evaluate.py --eval_teacher --splits dev eval
+```
+
+Results are saved to `results/comprehensive_eval.json`.
+
+## Step 7: Alpha Sweep (with ground-truth labels)
+
+```powershell
+# Full sweep: all students x alpha in {0.3, 0.5, 0.7, 0.9}
+.\05_run_alpha_sweep.ps1
+
+# Single student sweep
+.\05_run_alpha_sweep.ps1 -Student tiny_cnn
+
+# Evaluate only (skip training)
+.\05_run_alpha_sweep.ps1 -EvalOnly
 ```
 
 ## Troubleshooting

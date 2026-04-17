@@ -1,0 +1,18 @@
+{
+  "student": "mlp",
+  "temperature": 4.0,
+  "alpha": 0.5,
+  "epochs": 30,
+  "batch_size": 16,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "num_workers": 4,
+  "data_dir": "data/LibriParty/dataset",
+  "soft_labels_dir": "data/soft_labels",
+  "use_gt_labels": true,
+  "eval_split": "dev",
+  "device": "cuda",
+  "eval_only": false,
+  "checkpoint": null,
+  "generate_labels": false
+}
